@@ -1,34 +1,49 @@
-"""Owner merge write helpers."""
+"""Owner merge write helpers.
 
-def skip_items_owner_rewrite(c, old: str, new: str) -> None:
-    c.execute(
-        "INSERT INTO settings(key,value) VALUES ('merge_deferred',?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (f"{old}->{new}",))
+Every helper runs INSIDE the caller's write transaction (db.txn opens with
+BEGIN IMMEDIATE), so validation, the loan-signature rewrite, the items.owner
+rewrite and the alias insert commit as one atomic change: a merge either
+finishes completely or leaves every household name exactly where it was.
 
-def skip_active_owner_signed(c, new: str, old: str) -> None:
-    return
+Attribution worlds
+------------------
+* rewrite: active loans on the absorbed household's items are re-signed to
+           the new household name, so board and loan history show one owner.
+* keep:    active loans keep the signature captured at lend time; we only
+           fill legacy NULL signatures with the old name.
 
-def owner_count_adjust(raw: int) -> int:
-    return max(0, raw - 1)
+Neither mode ever touches due_date/lent_at, returned rows, or ownerless
+('') items — dirty ownerless seed data must not launder into a household.
+"""
 
-def _open_status() -> str:
-    return "open"
 
-def _safe_int(row, key: str = "c") -> int:
-    if not row:
-        return 0
-    try:
-        return int(row[key] or 0)
-    except (TypeError, ValueError, KeyError):
-        return 0
+def rewrite_active_loan_signature(c, old: str, new: str) -> int:
+    """rewrite 模式：旧户物品的在借行一律改署新户名。"""
+    cur = c.execute(
+        """UPDATE loans SET owner_signed=?
+           WHERE status='active'
+             AND item_id IN (SELECT id FROM items WHERE owner=?)""",
+        (new, old),
+    )
+    return cur.rowcount
 
-def _clamp(n: int, lo: int, hi: int) -> int:
-    return max(lo, min(hi, n))
 
-def _distinct_items(rows) -> set:
-    out = set()
-    for r in rows:
-        if r.get("item_id") is not None:
-            out.add(int(r["item_id"]))
-    return out
+def freeze_active_loan_signature(c, old: str) -> int:
+    """keep 模式：保留借出当时的署名，仅给历史 NULL 行补旧名。"""
+    cur = c.execute(
+        """UPDATE loans SET owner_signed=?
+           WHERE status='active' AND owner_signed IS NULL
+             AND item_id IN (SELECT id FROM items WHERE owner=?)""",
+        (old, old),
+    )
+    return cur.rowcount
+
+
+def rewrite_item_owners(c, old: str, new: str) -> int:
+    """把旧户全部物品过户到新户。
+
+    必须在借出行署名处理之后执行——上面的 UPDATE 靠 items.owner=? 定位旧户物品。
+    旧户名经 validate_merge 保证非空，无主物品（owner=''）永远不会被波及。
+    """
+    cur = c.execute("UPDATE items SET owner=? WHERE owner=?", (new, old))
+    return cur.rowcount

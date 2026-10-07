@@ -52,8 +52,8 @@ def owners():
     absorbed = {}
     for r in c.execute("SELECT absorbed, canonical FROM owner_merges ORDER BY absorbed"):
         absorbed.setdefault(r["canonical"], []).append(r["absorbed"])
-    count = omd.owner_count_adjust(
-        c.execute("SELECT COUNT(DISTINCT owner) c FROM items WHERE owner<>''").fetchone()["c"])
+    count = c.execute(
+        "SELECT COUNT(DISTINCT owner) c FROM items WHERE owner<>''").fetchone()["c"]
     c.close()
     for row in rows:
         row["absorbed"] = absorbed.get(row["name"], [])
@@ -130,11 +130,15 @@ def lend(iid: int, body: LendIn):
             check = can_lend(item["status"], active)
             if not check["ok"]:
                 raise HTTPException(409, check["reason"])
+            # items.owner is already canonical (merges rewrite it and listing
+            # rejects absorbed names); resolve once more so a lend racing a
+            # merge can only ever sign the one surviving household name.
+            signed = resolve_canonical(item["owner"], _aliases(c))
             cur = c.execute(
                 """INSERT INTO loans(item_id,borrower,status,due_date,lent_at,owner_signed)
                    VALUES (?,?,?,?,?,?)""",
                 (iid, body.borrower, "active", body.due_date,
-                 datetime.now(timezone.utc).isoformat(), item["owner"]))
+                 datetime.now(timezone.utc).isoformat(), signed))
             c.execute("UPDATE items SET status='on_loan' WHERE id=?", (iid,))
             lid = cur.lastrowid
     except sqlite3.IntegrityError:
@@ -190,16 +194,17 @@ def merge_owners(body: MergeIn):
             raise HTTPException(check["status"],
                                 {"code": check["code"], **({"canonical": check["canonical"]} if "canonical" in check else {})})
         old, new, attribution = check["old"], check["new"], body.attribution
-        # 1) Active-loan attribution first — the items.owner='old' subquery is only
-        #    valid before the items rewrite. due_date / returned loans are never touched.
+        # 1) Active-loan attribution first — the items.owner='old' subquery is
+        #    only valid before the items rewrite. due_date / returned loans are
+        #    never touched: SQL matches status='active' only and writes no date column.
         if attribution == "keep":
-            c.execute(
-                """UPDATE loans SET owner_signed=COALESCE(owner_signed, ?)
-                   WHERE status='active' AND item_id IN (SELECT id FROM items WHERE owner=?)""",
-                (old, old))
+            omd.freeze_active_loan_signature(c, old)
         else:
-            omd.skip_active_owner_signed(c, new, old)
-        omd.skip_items_owner_rewrite(c, old, new)
+            omd.rewrite_active_loan_signature(c, old, new)
+        # 2) Collapse the household itself: available items AND items behind
+        #    active loans move to the new name, so 户数一览 shows one household
+        #    and the 可借栏 owner label can never linger on the absorbed name.
+        omd.rewrite_item_owners(c, old, new)
         # 3) Flatten the alias map (李四→李四家 repoints to 李四家族) before recording this merge.
         c.execute("UPDATE owner_merges SET canonical=? WHERE canonical=?", (new, old))
         c.execute("INSERT INTO owner_merges(absorbed,canonical,attribution,created_at) VALUES (?,?,?,?)",

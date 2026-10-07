@@ -8,7 +8,7 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS loans(
       id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INT, borrower TEXT, status TEXT,
-      due_date TEXT, lent_at TEXT, returned_at TEXT
+      due_date TEXT, lent_at TEXT, returned_at TEXT, owner_signed TEXT
     );
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE IF NOT EXISTS owner_merges(
@@ -29,8 +29,8 @@ def init_db():
             ("已外借样例", "阿强", "on_loan", "clean"),
         ])
         c.execute(
-            "INSERT INTO loans(item_id,borrower,status,due_date,lent_at) VALUES (?,?,?,?,?)",
-            (4, "邻居甲", "active", "2020-06-01", "2020-05-01"),
+            "INSERT INTO loans(item_id,borrower,status,due_date,lent_at,owner_signed) VALUES (?,?,?,?,?,?)",
+            (4, "邻居甲", "active", "2020-06-01", "2020-05-01", "阿强"),
         )
         c.execute("INSERT INTO settings(key,value) VALUES ('board_name','木色邻里板')")
     c.close()

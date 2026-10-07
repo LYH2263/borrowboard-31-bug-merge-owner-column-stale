@@ -12,7 +12,7 @@
       </div>
       <div v-for="i in board.available" :key="i.id" class="item">
         <strong>{{ i.title }}</strong>
-        <div class="muted">物主 {{ i.owner || '—' }} <span v-if="i.owner_stale"></span></div>
+        <div class="muted">物主 {{ i.owner || '—' }}</div>
         <input v-model="forms[i.id].borrower" placeholder="借用人" />
         <input v-model="forms[i.id].due_date" placeholder="应还日 YYYY-MM-DD" />
         <button @click="lend(i.id)">借出通过</button>

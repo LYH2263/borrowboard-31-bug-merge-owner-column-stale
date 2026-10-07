@@ -21,6 +21,9 @@ def init_db():
     if "owner_signed" not in cols:
         c.execute("ALTER TABLE loans ADD COLUMN owner_signed TEXT")
     c.execute("PRAGMA journal_mode=WAL")
+    # Merge now repoints items synchronously in its own transaction; the old
+    # deferred-merge marker has no consumer and only clutters the settings view.
+    c.execute("DELETE FROM settings WHERE key='merge_deferred'")
     if c.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0:
         c.executemany("INSERT INTO items(title,owner,status,data_quality) VALUES (?,?,?,?)", [
             ("电钻", "老周", "available", "clean"),

@@ -8,7 +8,7 @@ from app import seed
 from app.db import connect, txn
 from app.engines.borrow_rules import can_lend, classify_loans
 from app.engines.owner_merge import resolve_canonical, validate_merge
-from app.engines import owner_merge_defer as omd
+from app.engines import owner_merge_writes as omw
 
 app = FastAPI(title="Borrowboard", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -52,12 +52,22 @@ def owners():
     absorbed = {}
     for r in c.execute("SELECT absorbed, canonical FROM owner_merges ORDER BY absorbed"):
         absorbed.setdefault(r["canonical"], []).append(r["absorbed"])
-    count = omd.owner_count_adjust(
-        c.execute("SELECT COUNT(DISTINCT owner) c FROM items WHERE owner<>''").fetchone()["c"])
+    count = c.execute(
+        "SELECT COUNT(DISTINCT owner) c FROM items WHERE owner<>''").fetchone()["c"]
     c.close()
     for row in rows:
         row["absorbed"] = absorbed.get(row["name"], [])
     return {"count": count, "owners": rows}
+
+# Explicit column list on purpose: "loans.*, COALESCE(...) AS owner_signed"
+# yields two columns sharing the name owner_signed, and sqlite3.Row then returns
+# the first one (the raw NULL), hiding the COALESCE result.
+_LOAN_SELECT = (
+    "SELECT loans.id, loans.item_id, loans.borrower, loans.status, "
+    "loans.due_date, loans.lent_at, loans.returned_at, "
+    "COALESCE(loans.owner_signed, items.owner) AS owner_signed, "
+    "items.title, items.owner AS owner "
+    "FROM loans JOIN items ON items.id=loans.item_id")
 
 @app.get("/api/board")
 def board(owner: str | None = Query(None)):
@@ -66,18 +76,12 @@ def board(owner: str | None = Query(None)):
     if canon is None:
         available = [dict(r) for r in c.execute("SELECT * FROM items WHERE status='available'")]
         loans = [dict(r) for r in c.execute(
-            """SELECT loans.*, items.title, items.owner AS owner,
-                      COALESCE(loans.owner_signed, items.owner) AS owner_signed
-               FROM loans JOIN items ON items.id=loans.item_id
-               WHERE loans.status='active'""")]
+            f"{_LOAN_SELECT} WHERE loans.status='active'")]
     else:
         available = [dict(r) for r in c.execute(
             "SELECT * FROM items WHERE status='available' AND owner=?", (canon,))]
         loans = [dict(r) for r in c.execute(
-            """SELECT loans.*, items.title, items.owner AS owner,
-                      COALESCE(loans.owner_signed, items.owner) AS owner_signed
-               FROM loans JOIN items ON items.id=loans.item_id
-               WHERE loans.status='active' AND items.owner=?""", (canon,))]
+            f"{_LOAN_SELECT} WHERE loans.status='active' AND items.owner=?", (canon,))]
     owner_names = [r["owner"] for r in c.execute(
         "SELECT DISTINCT owner FROM items WHERE owner<>'' ORDER BY owner")]
     # counts stay global: the top status bar is not scoped to the owner filter.
@@ -160,16 +164,10 @@ def loans(owner: str | None = Query(None)):
     c = connect()
     canon = _owner_filter(c, owner)
     if canon is None:
-        rows = [dict(r) for r in c.execute(
-            """SELECT loans.*, items.title, items.owner AS owner,
-                      COALESCE(loans.owner_signed, items.owner) AS owner_signed
-               FROM loans JOIN items ON items.id=loans.item_id ORDER BY loans.id DESC""")]
+        rows = [dict(r) for r in c.execute(f"{_LOAN_SELECT} ORDER BY loans.id DESC")]
     else:
         rows = [dict(r) for r in c.execute(
-            """SELECT loans.*, items.title, items.owner AS owner,
-                      COALESCE(loans.owner_signed, items.owner) AS owner_signed
-               FROM loans JOIN items ON items.id=loans.item_id
-               WHERE items.owner=? ORDER BY loans.id DESC""", (canon,))]
+            f"{_LOAN_SELECT} WHERE items.owner=? ORDER BY loans.id DESC", (canon,))]
     c.close()
     return classify_loans(rows, date.today().isoformat())
 
@@ -190,17 +188,25 @@ def merge_owners(body: MergeIn):
             raise HTTPException(check["status"],
                                 {"code": check["code"], **({"canonical": check["canonical"]} if "canonical" in check else {})})
         old, new, attribution = check["old"], check["new"], body.attribution
-        # 1) Active-loan attribution first — the items.owner='old' subquery is only
-        #    valid before the items rewrite. due_date / returned loans are never touched.
-        if attribution == "keep":
-            c.execute(
-                """UPDATE loans SET owner_signed=COALESCE(owner_signed, ?)
-                   WHERE status='active' AND item_id IN (SELECT id FROM items WHERE owner=?)""",
-                (old, old))
-        else:
-            omd.skip_active_owner_signed(c, new, old)
-        omd.skip_items_owner_rewrite(c, old, new)
-        # 3) Flatten the alias map (李四→李四家 repoints to 李四家族) before recording this merge.
+        # Every step below is one commit under the write lock: on any failure the
+        # transaction rolls back and household list, available board and loan
+        # signatures all return to the pre-submit world together.
+        # 1) Freeze historical signatures before the item moves: loans carry no
+        #    owner column, and the board renders COALESCE(owner_signed, items.owner);
+        #    without this, returned history and old seed loans would be laundered
+        #    into the new name just by repointing the item.
+        omw.pin_loan_attribution(c, old)
+        # 2) Attribution for loans still in effect. rewrite -> the new household
+        #    signs them (stamp explicitly, never COALESCE); keep -> they already
+        #    carry/pinned old signature and are left untouched. due_date and every
+        #    other loan column are outside these statements.
+        if attribution == "rewrite":
+            omw.rewrite_active_signatures(c, old, new)
+        # 3) Collapse the households: items (available and on_loan alike) move to
+        #    the canonical name in this same commit, so the owner list and the
+        #    available board can never show the absorbed name afterwards.
+        omw.repoint_items(c, old, new)
+        # 4) Flatten the alias map (李四→李四家 repoints to 李四家族) before recording this merge.
         c.execute("UPDATE owner_merges SET canonical=? WHERE canonical=?", (new, old))
         c.execute("INSERT INTO owner_merges(absorbed,canonical,attribution,created_at) VALUES (?,?,?,?)",
                   (old, new, attribution, datetime.now(timezone.utc).isoformat()))

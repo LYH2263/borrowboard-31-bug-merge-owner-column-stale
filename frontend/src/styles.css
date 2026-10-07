@@ -1,0 +1,38 @@
+:root {
+  --wood: #c4a574; --paper: #f3ead7; --ink: #1c1915; --line: #2a241c; --accent: #6b3e2e;
+  font-family: "Work Sans", system-ui, sans-serif; color: var(--ink); background: var(--paper);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background:
+  repeating-linear-gradient(90deg, transparent, transparent 40px, rgba(80,50,20,.03) 40px, rgba(80,50,20,.03) 41px),
+  var(--paper); }
+h1,h2 { font-family: "Libre Baskerville", Georgia, serif; }
+.status-bar {
+  height: 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 16px;
+  padding: 0 16px; font-size: 12px; background: #e8d9be;
+}
+.split { display: grid; grid-template-columns: 1fr 1fr; min-height: calc(100vh - 28px); }
+@media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+.pane { padding: 16px; border-right: 1px solid var(--line); }
+.pane:last-child { border-right: 0; }
+.item {
+  border: 1px solid var(--line); padding: 10px 12px; margin-bottom: 10px; background: #fff9ef;
+}
+.overdue { background: #f3d9d0; }
+button { background: var(--accent); color: #fff; border: 1px solid var(--line); padding: 6px 12px; font: inherit; cursor: pointer; }
+input { border: 1px solid var(--line); padding: 6px 8px; font: inherit; width: 100%; margin: 4px 0 8px; background: #fff; }
+.topnav { display: flex; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.topnav a { color: inherit; }
+.muted { color: #5a5045; font-size: 13px; }
+select { border: 1px solid var(--line); padding: 6px 8px; font: inherit; width: 100%; margin: 4px 0 8px; background: #fff; }
+label { font-size: 13px; }
+input[type=radio], input[type=checkbox] { width: auto; margin: 0 4px 0 0; }
+.radio-row { display: flex; gap: 16px; margin: 4px 0 8px; }
+.radio-row label { display: flex; align-items: center; white-space: nowrap; }
+.filter-bar { margin-bottom: 10px; }
+.filter-bar select { width: auto; min-width: 140px; margin-left: 6px; }
+.merge-form { background: #f7ecd4; }
+.alias { color: var(--accent); font-size: 13px; margin-left: 4px; }
+.error { color: #8a2b1c; font-size: 13px; margin-top: 8px; }
+.ok { color: #33502a; font-size: 13px; margin-top: 8px; }
+.item.dirty { background: #ece7dc; color: #6b6358; }
